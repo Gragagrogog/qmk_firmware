@@ -47,6 +47,8 @@ void matrix_init(void)
 
      palSetPadMode(GPIOC,  2,  PAL_MODE_INPUT_PULLDOWN); // teensy pin 23
 
+     //blabla
+
     /* Row(strobe) */
     palSetPadMode(GPIOB, 16,   PAL_MODE_OUTPUT_PUSHPULL);    // teensy pin 0
     palSetPadMode(GPIOB, 17,   PAL_MODE_OUTPUT_PUSHPULL);    // teensy pin 1
