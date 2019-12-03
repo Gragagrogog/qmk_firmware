@@ -6,15 +6,17 @@
 
 #include "led.h"
 
+#define CAPS_LOCK_LED_PIN LINE_PIN13
+
 void led_init_ports() {
-	palSetPadMode(GPIOC, 13, PAL_MODE_OUTPUT_PUSHPULL);
+	palSetLineMode(CAPS_LOCK_LED_PIN, PAL_MODE_OUTPUT_PUSHPULL);
 }
 
 void led_set(uint8_t usb_led) {
     if (usb_led & (1<<USB_LED_CAPS_LOCK)) {
-        palClearPad(GPIOC, 13);
+        palSetLine(CAPS_LOCK_LED_PIN);
     } else {
-        palSetPad(GPIOC, 13);
+        palClearLine(CAPS_LOCK_LED_PIN);
     }
 }
 

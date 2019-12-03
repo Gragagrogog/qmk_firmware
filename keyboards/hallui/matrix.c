@@ -20,7 +20,6 @@ uint32_t matrix_timer;
 uint32_t matrix_scan_count;
 #endif
 
-
 // Create buffer to store ADC results. This is
 // one-dimensional interleaved array
 
@@ -31,127 +30,142 @@ uint32_t matrix_scan_count;
 
     1.5 ADC CLOCK sample time seems to work fine if there's no filtering on the inputs
 */
-#define ADC_BUF_DEPTH 4 // depth of buffer
-#define HALL_SAMPLE_TIME ADC_SAMPLE_1P5 //time select for charging internal capacitor, the actual adc convertion time is govern my STM32_ADCPRE
-#define ADC_CH_NUM 8    // number of used ADC channels
+#define ADC_BUF_DEPTH 1 // depth of buffer
+#define ADC_GRP1_NUM_CHANNELS 4    // number of used ADC channels
+//#define ADC_GRP2_NUM_CHANNELS 4    // number of used ADC channels
 #define MULTIPLEXER_NUM_CHANNELS 16
-static uint8_t curent_mux_channel = 0;
-static adcsample_t samples[ADC_BUF_DEPTH * ADC_CH_NUM * MULTIPLEXER_NUM_CHANNELS]; // results array
+//static uint8_t curent_mux_channel = 0;
+static volatile adcsample_t samples1[ADC_GRP1_NUM_CHANNELS * MULTIPLEXER_NUM_CHANNELS];
+//static adcsample_t samples[ADC_BUF_DEPTH * ADC_GRP1_NUM_CHANNELS * MULTIPLEXER_NUM_CHANNELS]; // results array
+static uint8_t adc_grp1_channels[ADC_GRP1_NUM_CHANNELS + 1] = {5, 14, 13, 12, 0x1F}; // ADCx_SC1n_AIEN 0x1F
 
-#define MULTIPLEXER_S0 A8
-#define MULTIPLEXER_S1 A9
-#define MULTIPLEXER_S2 A10
-#define MULTIPLEXER_S3 B15
+#define MULTIPLEXER_S0 LINE_PIN5
+#define MULTIPLEXER_S1 LINE_PIN6
+#define MULTIPLEXER_S2 LINE_PIN7
+#define MULTIPLEXER_S3 LINE_PIN8
 
-#define ADC_SCOPE_TRIG_OUT_PIN B7
+//the pins must be in the same GPIO bank
+static const uint8_t mux_bit_flips[MULTIPLEXER_NUM_CHANNELS] = {
+    (uint8_t) 1 << PAL_PAD(MULTIPLEXER_S3),
+    (uint8_t) 1 << PAL_PAD(MULTIPLEXER_S2),
+    (uint8_t) 1 << PAL_PAD(MULTIPLEXER_S0),
+    (uint8_t) 1 << PAL_PAD(MULTIPLEXER_S2),
+    (uint8_t) 1 << PAL_PAD(MULTIPLEXER_S1),
+    (uint8_t) 1 << PAL_PAD(MULTIPLEXER_S2),
+    (uint8_t) 1 << PAL_PAD(MULTIPLEXER_S3),
+    (uint8_t) 1 << PAL_PAD(MULTIPLEXER_S1),
+    (uint8_t) 1 << PAL_PAD(MULTIPLEXER_S0),
+    (uint8_t) 1 << PAL_PAD(MULTIPLEXER_S1),
+    (uint8_t) 1 << PAL_PAD(MULTIPLEXER_S3),
+    (uint8_t) 1 << PAL_PAD(MULTIPLEXER_S2),
+    (uint8_t) 1 << PAL_PAD(MULTIPLEXER_S3),
+    (uint8_t) 1 << PAL_PAD(MULTIPLEXER_S0),
+    (uint8_t) 1 << PAL_PAD(MULTIPLEXER_S1),
+    (uint8_t) 1 << PAL_PAD(MULTIPLEXER_S0)
+};
 
-static void adc_callback(ADCDriver *adcp, adcsample_t *buffer, size_t n) {
-    (void) buffer;
-    (void) n;
-    if (adcp->state == ADC_COMPLETE) {
-        #ifdef ADC_SCOPE_TRIG_OUT_PIN
-        if (curent_mux_channel == 0){
-            palWriteLine(ADC_SCOPE_TRIG_OUT_PIN, 1);
-        } else if (curent_mux_channel == 1){
-            palWriteLine(ADC_SCOPE_TRIG_OUT_PIN, 0);
-        }
-        #endif
-
-        curent_mux_channel++;
-        switch (curent_mux_channel) {
-            case  1: palWriteLine(MULTIPLEXER_S3,  1); break; // NEXT CHANNEL:  8
-            case  2: palWriteLine(MULTIPLEXER_S2,  1); break; // NEXT CHANNEL: 12
-            case  3: palWriteLine(MULTIPLEXER_S0,  1); break; // NEXT CHANNEL: 13
-            case  4: palWriteLine(MULTIPLEXER_S2,  0); break; // NEXT CHANNEL:  9
-            case  5: palWriteLine(MULTIPLEXER_S1,  1); break; // NEXT CHANNEL: 11
-            case  6: palWriteLine(MULTIPLEXER_S2,  1); break; // NEXT CHANNEL: 15
-            case  7: palWriteLine(MULTIPLEXER_S3,  0); break; // NEXT CHANNEL:  7
-            case  8: palWriteLine(MULTIPLEXER_S1,  0); break; // NEXT CHANNEL:  5
-            case  9: palWriteLine(MULTIPLEXER_S0,  0); break; // NEXT CHANNEL:  4
-            case 10: palWriteLine(MULTIPLEXER_S1,  1); break; // NEXT CHANNEL:  6
-            case 11: palWriteLine(MULTIPLEXER_S3,  1); break; // NEXT CHANNEL: 14
-            case 12: palWriteLine(MULTIPLEXER_S2,  0); break; // NEXT CHANNEL: 10
-            case 13: palWriteLine(MULTIPLEXER_S3,  0); break; // NEXT CHANNEL:  2
-            case 14: palWriteLine(MULTIPLEXER_S0,  1); break; // NEXT CHANNEL:  3
-            case 15: palWriteLine(MULTIPLEXER_S1,  0); break; // NEXT CHANNEL:  1
-            case 16: palWriteLine(MULTIPLEXER_S0,  0); curent_mux_channel = 0; break; // NEXT CHANNEL:  0
-        }
-        adcStartConversionI(&ADCD1, &stm32f103_conversion_group, &samples[ADC_BUF_DEPTH * ADC_CH_NUM * curent_mux_channel], ADC_BUF_DEPTH);
-    }
-}
-
-static const ADCConversionGroup stm32f103_conversion_group = {
-    FALSE,                            //CIRCULAR
-    (uint16_t)ADC_CH_NUM,                        //NUMB OF CH
-    adc_callback,                             //ADC CALLBACK
-    NULL,                             //ADC ERROR CALLBACK
-    0,                                // CR1 
-    0, //ADC_CR2_SWSTART,                  // CR2 
-
-    0,                                // SMPR1 (Sample times for channel 10-18)
-    ADC_SMPR2_SMP_AN0(HALL_SAMPLE_TIME) |
-    ADC_SMPR2_SMP_AN1(HALL_SAMPLE_TIME) |
-    ADC_SMPR2_SMP_AN2(HALL_SAMPLE_TIME) |
-    ADC_SMPR2_SMP_AN3(HALL_SAMPLE_TIME) |
-    ADC_SMPR2_SMP_AN4(HALL_SAMPLE_TIME) |
-    ADC_SMPR2_SMP_AN5(HALL_SAMPLE_TIME) |
-    ADC_SMPR2_SMP_AN6(HALL_SAMPLE_TIME) |
-    ADC_SMPR2_SMP_AN7(HALL_SAMPLE_TIME),             // SMPR2 (Sample times for channel 0-9)
-    ADC_SQR1_NUM_CH(ADC_CH_NUM),       // SQR1 (Conversion group sequence 13th-16th + sequence length.)
-    ADC_SQR2_SQ7_N(ADC_CHANNEL_IN6) |
-    ADC_SQR2_SQ8_N(ADC_CHANNEL_IN7),   // SQR2 (Conversion group sequence 7th-12th)
-    ADC_SQR3_SQ1_N(ADC_CHANNEL_IN0) |
-    ADC_SQR3_SQ2_N(ADC_CHANNEL_IN1) |
-    ADC_SQR3_SQ3_N(ADC_CHANNEL_IN2) |
-    ADC_SQR3_SQ4_N(ADC_CHANNEL_IN3) |
-    ADC_SQR3_SQ5_N(ADC_CHANNEL_IN4) |
-    ADC_SQR3_SQ6_N(ADC_CHANNEL_IN5)  // SQR3 (Conversion group sequence 1st-6th)
-}; 
-
+static const ADCConfig adccfg1 = {
+  /* Perform initial calibration */
+  true
+};
 
 /*
 static void gptcallback1(GPTDriver *gptp) {
     (void) gptp;
     if (ADCD1.state == ADC_READY) {
-        #ifdef ADC_SCOPE_TRIG_OUT_PIN
-        if (curent_mux_channel == 0){
-            palWriteLine(B7, 1);
-        } else if (curent_mux_channel == 1){
-            palWriteLine(B7, 0);
-        }
-        #endif
-
-        curent_mux_channel++;
-        switch (curent_mux_channel) {
-            case  1: palWriteLine(MULTIPLEXER_S3,  1); break; // NEXT CHANNEL:  8
-            case  2: palWriteLine(MULTIPLEXER_S2,  1); break; // NEXT CHANNEL: 12
-            case  3: palWriteLine(MULTIPLEXER_S0,  1); break; // NEXT CHANNEL: 13
-            case  4: palWriteLine(MULTIPLEXER_S2,  0); break; // NEXT CHANNEL:  9
-            case  5: palWriteLine(MULTIPLEXER_S1,  1); break; // NEXT CHANNEL: 11
-            case  6: palWriteLine(MULTIPLEXER_S2,  1); break; // NEXT CHANNEL: 15
-            case  7: palWriteLine(MULTIPLEXER_S3,  0); break; // NEXT CHANNEL:  7
-            case  8: palWriteLine(MULTIPLEXER_S1,  0); break; // NEXT CHANNEL:  5
-            case  9: palWriteLine(MULTIPLEXER_S0,  0); break; // NEXT CHANNEL:  4
-            case 10: palWriteLine(MULTIPLEXER_S1,  1); break; // NEXT CHANNEL:  6
-            case 11: palWriteLine(MULTIPLEXER_S3,  1); break; // NEXT CHANNEL: 14
-            case 12: palWriteLine(MULTIPLEXER_S2,  0); break; // NEXT CHANNEL: 10
-            case 13: palWriteLine(MULTIPLEXER_S3,  0); break; // NEXT CHANNEL:  2
-            case 14: palWriteLine(MULTIPLEXER_S0,  1); break; // NEXT CHANNEL:  3
-            case 15: palWriteLine(MULTIPLEXER_S1,  0); break; // NEXT CHANNEL:  1
-            case 16: palWriteLine(MULTIPLEXER_S0,  0); curent_mux_channel = 0; break; // NEXT CHANNEL:  0
-        }
-
-
-        adcStartConversion(&ADCD1, &stm32f103_conversion_group, &samples[ADC_BUF_DEPTH * ADC_CH_NUM * curent_mux_channel], ADC_BUF_DEPTH);
+        //adcStart(&ADCD1, &adccfg2);
+        adcStartConversion(&ADCD1, &teensy32_cg1, (adcsample_t*) samples, ADC_BUF_DEPTH); //&samples[ADC_BUF_DEPTH * ADC_GRP1_NUM_CHANNELS * curent_mux_channel]
+        //adcConvert(&ADCD1, &teensy32_cg1, &samples[ADC_BUF_DEPTH * ADC_GRP1_NUM_CHANNELS * curent_mux_channel], ADC_BUF_DEPTH);
     }
 }
 
 static GPTConfig gptcfg1 = {
-  256000,                     // frequency
+  10,                     // frequency
   gptcallback1,               // callback
-  0,
-  0
 };*/
+
+void analog_matrix_setup(void)
+{
+    //CFG1 Regiser
+    //0 bits: Normal power configuration, Short sample time, 
+    ADCD1.adc->CFG1 = ADCx_CFG1_ADIV(ADCx_CFG1_ADIV_DIV_1) |
+                      ADCx_CFG1_ADICLK(ADCx_CFG1_ADIVCLK_BUS_CLOCK) |
+                      ADCx_CFG1_MODE(ADCx_CFG1_MODE_12_OR_13_BITS);
+    //CFG2 Regiser
+    //0 bits: Asynchronous clock output disabled, Normal conversion sequence selected
+    ADCD1.adc->CFG2 = ADCx_CFG2_MUXSEL_ADxxB;
+
+    /* Set averaging */
+    ADCD1.adc->SC3 = ADCx_SC3_AVGE | ADCx_SC3_AVGS(ADCx_SC3_AVGS_AVERAGE_4_SAMPLES);
+
+    ADCD1.adc->SC2 = ADCx_SC2_DMA_ENABLE; // | ADCx_SC2_TRIGGER_HARDWARE;
+
+    ADCD1.adc->SC1A = 0x1F; // RESET COCO bit from calibration
+
+    //DMA Clock Gate
+    SIM->SCGC6 |= SIM_SCGC6_DMAMUX;
+    SIM->SCGC7 |= SIM_SCGC7_DMA;
+
+    //DMA->CR = 0;
+    //DMA->ES = 0;
+    //DMA->ERQ = 0;
+    //DMA->EEI = 0;
+    //DMA->INT = 0;
+    //DMA->HRS = 0;
+
+    DMA->TCD[KINETIS_HALLUI_ADC0R_DMA_CHANNEL].SADDR = (uint32_t)&ADCD1.adc->RA;
+    DMA->TCD[KINETIS_HALLUI_ADC0R_DMA_CHANNEL].SOFF = 0; // source increment each transfer
+    DMA->TCD[KINETIS_HALLUI_ADC0R_DMA_CHANNEL].ATTR = DMA_ATTR_SSIZE(1) | DMA_ATTR_DSIZE(1); // byte sizes: 1B=0, 2B=1, 4B=2, 16B=4
+    DMA->TCD[KINETIS_HALLUI_ADC0R_DMA_CHANNEL].NBYTES_MLNO = 2;     // bytes per transfer DMA_NBYTES_MLOFFYES_DMLOE_MASK |
+    DMA->TCD[KINETIS_HALLUI_ADC0R_DMA_CHANNEL].SLAST = 0;
+    DMA->TCD[KINETIS_HALLUI_ADC0R_DMA_CHANNEL].DADDR = (uint32_t)&samples1;// where to write to
+    DMA->TCD[KINETIS_HALLUI_ADC0R_DMA_CHANNEL].DOFF = 2; // destination increment
+    DMA->TCD[KINETIS_HALLUI_ADC0R_DMA_CHANNEL].DLASTSGA = -2 * ADC_GRP1_NUM_CHANNELS * MULTIPLEXER_NUM_CHANNELS;
+    DMA->TCD[KINETIS_HALLUI_ADC0R_DMA_CHANNEL].BITER_ELINKYES = DMA_BITER_ELINKYES_ELINK_MASK | DMA_BITER_ELINKYES_LINKCH(KINETIS_HALLUI_ADC0S_DMA_CHANNEL) | ADC_GRP1_NUM_CHANNELS * MULTIPLEXER_NUM_CHANNELS;
+    DMA->TCD[KINETIS_HALLUI_ADC0R_DMA_CHANNEL].CITER_ELINKYES = DMA_CITER_ELINKYES_ELINK_MASK | DMA_CITER_ELINKYES_LINKCH(KINETIS_HALLUI_ADC0S_DMA_CHANNEL) | ADC_GRP1_NUM_CHANNELS * MULTIPLEXER_NUM_CHANNELS;    
+    DMA->TCD[KINETIS_HALLUI_ADC0R_DMA_CHANNEL].CSR = DMA_CSR_MAJORELINK_MASK | DMA_CSR_MAJORLINKCH(KINETIS_HALLUI_ADC0S_DMA_CHANNEL);
+    DMAMUX->CHCFG[KINETIS_HALLUI_ADC0R_DMA_CHANNEL] = DMAMUX_CHCFGn_ENBL | DMAMUX_CHCFGn_SOURCE(40); //ADC0 source = 40
+
+    DMA->TCD[KINETIS_HALLUI_ADC0S_DMA_CHANNEL].SADDR = (uint32_t)&adc_grp1_channels[0];
+    DMA->TCD[KINETIS_HALLUI_ADC0S_DMA_CHANNEL].SOFF = 1; // source increment each transfer
+    DMA->TCD[KINETIS_HALLUI_ADC0S_DMA_CHANNEL].ATTR = DMA_ATTR_SSIZE(0) | DMA_ATTR_DSIZE(0); // byte sizes: 1B=0, 2B=1, 4B=2, 16B=4
+    DMA->TCD[KINETIS_HALLUI_ADC0S_DMA_CHANNEL].NBYTES_MLNO = 1;     // bytes per transfer
+    DMA->TCD[KINETIS_HALLUI_ADC0S_DMA_CHANNEL].SLAST = -(ADC_GRP1_NUM_CHANNELS + 1);
+    DMA->TCD[KINETIS_HALLUI_ADC0S_DMA_CHANNEL].DADDR = (uint32_t)&ADCD1.adc->SC1A;// where to write to
+    DMA->TCD[KINETIS_HALLUI_ADC0S_DMA_CHANNEL].DOFF = 0; // destination increment
+    DMA->TCD[KINETIS_HALLUI_ADC0S_DMA_CHANNEL].DLASTSGA = 0;
+    DMA->TCD[KINETIS_HALLUI_ADC0S_DMA_CHANNEL].BITER_ELINKNO = ADC_GRP1_NUM_CHANNELS + 1;
+    DMA->TCD[KINETIS_HALLUI_ADC0S_DMA_CHANNEL].CITER_ELINKNO = ADC_GRP1_NUM_CHANNELS + 1;    
+    DMA->TCD[KINETIS_HALLUI_ADC0S_DMA_CHANNEL].CSR = DMA_CSR_MAJORELINK_MASK | DMA_CSR_MAJORLINKCH(KINETIS_HALLUI_GPIO_DMA_CHANNEL);
+
+    DMA->TCD[KINETIS_HALLUI_GPIO_DMA_CHANNEL].SADDR = (uint32_t)&mux_bit_flips[0];
+    DMA->TCD[KINETIS_HALLUI_GPIO_DMA_CHANNEL].SOFF = 1; // source increment each transfer
+    DMA->TCD[KINETIS_HALLUI_GPIO_DMA_CHANNEL].ATTR = DMA_ATTR_SSIZE(0) | DMA_ATTR_DSIZE(0); // byte sizes: 1B=0, 2B=1, 4B=2, 16B=4
+    DMA->TCD[KINETIS_HALLUI_GPIO_DMA_CHANNEL].NBYTES_MLNO = 1;     // bytes per transfer
+    DMA->TCD[KINETIS_HALLUI_GPIO_DMA_CHANNEL].SLAST = -1 * MULTIPLEXER_NUM_CHANNELS;
+    DMA->TCD[KINETIS_HALLUI_GPIO_DMA_CHANNEL].DADDR = (uint32_t)&GPIOD->PTOR;// where to write to
+    DMA->TCD[KINETIS_HALLUI_GPIO_DMA_CHANNEL].DOFF = 0; // destination increment
+    DMA->TCD[KINETIS_HALLUI_GPIO_DMA_CHANNEL].DLASTSGA = 0;
+    DMA->TCD[KINETIS_HALLUI_GPIO_DMA_CHANNEL].BITER_ELINKYES = DMA_BITER_ELINKYES_ELINK_MASK | DMA_BITER_ELINKYES_LINKCH(KINETIS_HALLUI_ADC0S_DMA_CHANNEL) | MULTIPLEXER_NUM_CHANNELS;
+    DMA->TCD[KINETIS_HALLUI_GPIO_DMA_CHANNEL].CITER_ELINKYES = DMA_CITER_ELINKYES_ELINK_MASK | DMA_CITER_ELINKYES_LINKCH(KINETIS_HALLUI_ADC0S_DMA_CHANNEL) | MULTIPLEXER_NUM_CHANNELS;    
+    DMA->TCD[KINETIS_HALLUI_GPIO_DMA_CHANNEL].CSR = DMA_CSR_MAJORELINK_MASK | DMA_CSR_MAJORLINKCH(KINETIS_HALLUI_ADC0S_DMA_CHANNEL);
+
+    //enable hardware request, this is not needed for DMA to DMA linked channels
+    DMA->SERQ = KINETIS_HALLUI_ADC0R_DMA_CHANNEL; 
+    //todo: DMA channel priority DMA_DCHPRIn ? 
+
+    //DMA->TCD[1].CSR = DMA_CSR_START_MASK; //explicit SW start
+    DMA->SSRT = KINETIS_HALLUI_ADC0S_DMA_CHANNEL;
+    //ADCD1.adc->SC1A = 14; //adc_grp1_channels[0];
+
+    //ADCD1.adc->SC1A = adc_grp1_channels[0];
+    //adcAcquireBus(&ADCD1);
+    //adcStartConversion(&ADCD1, &teensy32_cg1, (adcsample_t*) samples, ADC_BUF_DEPTH);
+    //osalSysUnlockFromISR(); 
+
+    //gptStart(&GPTD1, &gptcfg1);
+    //gptStartContinuous(&GPTD1, 1);
+}
 
 
 void matrix_init(void)
@@ -159,10 +173,6 @@ void matrix_init(void)
     #ifdef DEBUG_MATRIX_SCAN_RATE
       matrix_timer = timer_read32();
       matrix_scan_count = 0;
-    #endif
-
-    #ifdef ADC_SCOPE_TRIG_OUT_PIN
-      palSetLineMode(ADC_SCOPE_TRIG_OUT_PIN, PAL_MODE_OUTPUT_PUSHPULL);
     #endif
 
     /* Multiplexer channel select pins */
@@ -178,16 +188,16 @@ void matrix_init(void)
     palWriteLine(MULTIPLEXER_S3, 0);
 
     /* Analog signal pins (one per each multiplexer) */
-    palSetGroupMode(GPIOA, 0xFFU, 0, PAL_MODE_INPUT_ANALOG); //PA0 through PA7
+    palSetLineMode(LINE_PIN15, PAL_MODE_INPUT_ANALOG);
+    palSetLineMode(LINE_PIN18, PAL_MODE_INPUT_ANALOG);
+    palSetLineMode(LINE_PIN19, PAL_MODE_INPUT_ANALOG);
+    palSetLineMode(LINE_PIN22, PAL_MODE_INPUT_ANALOG);
   
-    //osalSysLockFromISR();   
-    adcStart(&ADCD1, NULL);
-    //adcAcquireBus(&ADCD1);
-    adcStartConversionI(&ADCD1, &stm32f103_conversion_group, (adcsample_t*) samples, ADC_BUF_DEPTH);
-    //osalSysUnlockFromISR(); 
+    adcInit();
+    adcStart(&ADCD1, &adccfg1); //adc calibration (blocking)
+    adcStart(&ADCD2, &adccfg1); //adc calibration (blocking)
 
-    //gptStart(&GPTD1, &gptcfg1);
-    //gptStartContinuous(&GPTD1, 1);
+    analog_matrix_setup(); //CPU-free background analog matrix scanning using DMA links
     
     memset(matrix, 0, MATRIX_ROWS * sizeof(matrix_row_t));
     memset(matrix_debouncing, 0, MATRIX_ROWS * sizeof(matrix_row_t));
@@ -232,18 +242,23 @@ uint8_t matrix_scan(void)
 
         //generate digital data from analog readings
 
-        if (b_min > samples[0])
-            b_min = samples[0];
+        if (b_min > samples1[0])
+            b_min = samples1[0];
 
-        if (b_max < samples[0])
-            b_max = samples[0];
+        if (b_max < samples1[0])
+            b_max = samples1[0];
 
-        uint16_t avg = (samples[0] + samples[0 + ADC_CH_NUM] + samples[0 + ADC_CH_NUM*2]) / 3;
+        //uint16_t avg = (samples1[0]); // + samples1[0 + ADC_GRP1_NUM_CHANNELS] + samples1[0 + ADC_CH_NUM*2]) / 3;
 
 
         if (matrix_scan_count == 1) {
-            printf("number: %u avg: %u min: %u max: %u pp: %u \n", samples[0], avg, b_min, b_max, b_max - b_min);
+            //printf("number: %u avg: %u min: %u max: %u pp: %u \n", samples1[0], avg, b_min, b_max, b_max - b_min);
+            printf("BUFF: %u %u %u %u %u %u %u %u   %u \n", samples1[0], samples1[1], samples1[2], samples1[3], samples1[4], samples1[5], samples1[6], samples1[7], DMA->ES);
+            //printf("%u %u\n", SIM->FCFG1, MCM->CR);
+            //printf("%u \n", DMA->TCD[KINETIS_HALLUI_ADC0S_DMA_CHANNEL].BITER_ELINKNO);
             b_min = 65535, b_max = 0;
+
+            //ADCD1.adc->SC1A = ADCx_SC1n_ADCH(ADC_AD15);
             /*
             adcstate_t state = ADCD1.state;
             switch(state) {
@@ -257,12 +272,12 @@ uint8_t matrix_scan(void)
 
         }
 
-        if (stored_states[0] == false && samples[0] < thrs_trigger) {
+        if (stored_states[0] == false && samples1[0] < thrs_trigger) {
             stored_states[0] = true;
             data = 1;
             time_pressed = timer_read32();
         }
-        else if (stored_states[0] == true && samples[0] > thrs_untrigger) {
+        else if (stored_states[0] == true && samples1[0] > thrs_untrigger) {
             stored_states[0] = false;
             data = 0;
             printf("time presses: %u ms", TIMER_DIFF_32(timer_read32(), time_pressed));
