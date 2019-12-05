@@ -23,11 +23,11 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #define DEVICE_VER      0x0001
 #define MANUFACTURER    Kutululu
 #define PRODUCT         Hallui/QMK
-#define DESCRIPTION     test board for qmk
+#define DESCRIPTION     Keyboard with analog hall switches
 
 /* key matrix size */
-#define MATRIX_ROWS 1
-#define MATRIX_COLS 1
+#define MATRIX_ROWS 8
+#define MATRIX_COLS 16
 
 /* define if matrix has ghost */
 //#define MATRIX_HAS_GHOST
@@ -54,15 +54,7 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #define DEBUG_MATRIX_SCAN_RATE
 //#define DEBUG_MOUSE_SCAN_RATE
 
-/*#define NUMBER_OF_ENCODERS 1
-//#define ENCODERS_PAL_A_PORT { GPIOB }
-//#define ENCODERS_PAL_A_BIT  { 19 }
-//#define ENCODERS_PAL_B_PORT { GPIOA }
-//#define ENCODERS_PAL_B_BIT  { 5 }
-#ifndef B19
-	#define B19 PAL_LINE(GPIOB, 19)
-#endif
-
+/*#define NUMBER_OF_ENCODERS 1 
 #define ENCODERS_PAD_A { B19 }
 #define ENCODERS_PAD_B { A5 }
 #define ENCODER_RESOLUTION 2 */

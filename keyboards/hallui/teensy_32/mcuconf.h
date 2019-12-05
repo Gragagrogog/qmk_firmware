@@ -22,34 +22,35 @@
 /*
  * HAL driver system settings.
  */
-/* PEE mode - 48MHz system clock driven by (16 MHz) external crystal. */
+/* PEE mode - system clock driven by (16 MHz) external crystal. */
 #define KINETIS_MCG_MODE            KINETIS_MCG_MODE_PEE
-#define KINETIS_PLLCLK_FREQUENCY     96000000UL //96
-//#define KINETIS_SYSCLK_FREQUENCY     96000000UL //48
-
-
-/*
-#define KINETIS_PLLCLK_FREQUENCY    72000000UL
-#define KINETIS_SYSCLK_FREQUENCY    72000000UL
-#define KINETIS_BUSCLK_FREQUENCY    36000000UL
-#define KINETIS_FLASHCLK_FREQUENCY  24000000UL*/
+#define KINETIS_PLLCLK_FREQUENCY     96000000UL
+#define KINETIS_SYSCLK_FREQUENCY     96000000UL
+#define KINETIS_BUSCLK_FREQUENCY     48000000UL
+#define KINETIS_FLASHCLK_FREQUENCY   32000000UL
 
 #define KINETIS_ADC_USE_ADC0                  TRUE
 #define KINETIS_ADC_USE_ADC1                  TRUE
 
-#define KINETIS_HALLUI_ADC0R_DMA_CHANNEL           15
-#define KINETIS_HALLUI_ADC0S_DMA_CHANNEL           14
-
-#define KINETIS_HALLUI_GPIO_DMA_CHANNEL           5
+/*
+ * DMA channels for analog matrix keyboard scanning using 2 ADCs
+ * 0..15 - lowest to highest (default) priority 
+ * keep: ADC1R > ADC0R
+ *       ADC1S > ADC0S
+ *       LINK and GPIO lower than the rest
+ */
+#define KINETIS_HALLUI_ADC1R_DMA_CHANNEL           15
+#define KINETIS_HALLUI_ADC0R_DMA_CHANNEL           14
+#define KINETIS_HALLUI_ADC1S_DMA_CHANNEL           13
+#define KINETIS_HALLUI_ADC0S_DMA_CHANNEL           12
+#define KINETIS_HALLUI_LINK_DMA_CHANNEL            11
+#define KINETIS_HALLUI_GPIO_DMA_CHANNEL            10
 
 /*
  * GPT driver system settings.
  */
 //#define KINETIS_GPT_USE_PIT0                  TRUE
 
-/*
- * SERIAL driver system settings.
- */
 #define KINETIS_SERIAL_USE_UART0              FALSE
 
 /*
