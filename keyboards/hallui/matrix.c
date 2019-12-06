@@ -40,29 +40,46 @@ static uint8_t adc_grp1_channels[ADC_GRP1_NUM_CHANNELS + 1] = {5, 14, 13, 12, 0x
 static uint8_t adc_grp2_channels[ADC_GRP1_NUM_CHANNELS + 1] = {8,  9,  4,  5, 0x1F}; 
 static uint8_t link_dma_channel = KINETIS_HALLUI_ADC1S_DMA_CHANNEL;
 
-#define MULTIPLEXER_S0 LINE_PIN5
-#define MULTIPLEXER_S1 LINE_PIN6
-#define MULTIPLEXER_S2 LINE_PIN7
-#define MULTIPLEXER_S3 LINE_PIN8
+#define MULTIPLEXER_S0 LINE_PIN2
+#define MULTIPLEXER_S1 LINE_PIN3
+#define MULTIPLEXER_S2 LINE_PIN4
+#define MULTIPLEXER_S3 LINE_PIN5
 
-//the pins must be in the same GPIO bank
-static const uint8_t mux_bit_flips[MULTIPLEXER_NUM_CHANNELS] = {
-    (uint8_t) 1 << PAL_PAD(MULTIPLEXER_S3),
-    (uint8_t) 1 << PAL_PAD(MULTIPLEXER_S2),
-    (uint8_t) 1 << PAL_PAD(MULTIPLEXER_S0),
-    (uint8_t) 1 << PAL_PAD(MULTIPLEXER_S2),
-    (uint8_t) 1 << PAL_PAD(MULTIPLEXER_S1),
-    (uint8_t) 1 << PAL_PAD(MULTIPLEXER_S2),
-    (uint8_t) 1 << PAL_PAD(MULTIPLEXER_S3),
-    (uint8_t) 1 << PAL_PAD(MULTIPLEXER_S1),
-    (uint8_t) 1 << PAL_PAD(MULTIPLEXER_S0),
-    (uint8_t) 1 << PAL_PAD(MULTIPLEXER_S1),
-    (uint8_t) 1 << PAL_PAD(MULTIPLEXER_S3),
-    (uint8_t) 1 << PAL_PAD(MULTIPLEXER_S2),
-    (uint8_t) 1 << PAL_PAD(MULTIPLEXER_S3),
-    (uint8_t) 1 << PAL_PAD(MULTIPLEXER_S0),
-    (uint8_t) 1 << PAL_PAD(MULTIPLEXER_S1),
-    (uint8_t) 1 << PAL_PAD(MULTIPLEXER_S0)
+static uint32_t mux_pad[4] = {
+    1 << PAL_PAD(MULTIPLEXER_S0),
+    1 << PAL_PAD(MULTIPLEXER_S1),
+    1 << PAL_PAD(MULTIPLEXER_S2),
+    1 << PAL_PAD(MULTIPLEXER_S3),
+};
+
+#define SGC_CSR  ((uint32_t)(DMA_CSR_ESG_MASK | DMA_CSR_MAJORELINK_MASK | DMA_CSR_MAJORLINKCH(KINETIS_HALLUI_LINK_DMA_CHANNEL)))
+#define SGC_ATTR ((uint32_t)(DMA_ATTR_SSIZE(2) | DMA_ATTR_DSIZE(2))) // 4 bytes
+#define MUX_BANK_S0 (uint32_t)&(PAL_PORT(MULTIPLEXER_S0))->PSOR
+#define MUX_BANK_S1 (uint32_t)&(PAL_PORT(MULTIPLEXER_S1))->PSOR
+#define MUX_BANK_S2 (uint32_t)&(PAL_PORT(MULTIPLEXER_S2))->PSOR
+#define MUX_BANK_S3 (uint32_t)&(PAL_PORT(MULTIPLEXER_S3))->PSOR
+#define MUX_BANK_C0 (uint32_t)&(PAL_PORT(MULTIPLEXER_S0))->PCOR
+#define MUX_BANK_C1 (uint32_t)&(PAL_PORT(MULTIPLEXER_S1))->PCOR
+#define MUX_BANK_C2 (uint32_t)&(PAL_PORT(MULTIPLEXER_S2))->PCOR
+#define MUX_BANK_C3 (uint32_t)&(PAL_PORT(MULTIPLEXER_S3))->PCOR
+
+DMA_TCD_TypeDef mux_scatter_dma_src[MULTIPLEXER_NUM_CHANNELS] = {
+    {.SADDR=(uint32_t)&mux_pad[3], .SOFF=0, .ATTR=SGC_ATTR, .NBYTES_MLNO=4, .SLAST=0, .DADDR=MUX_BANK_S3, .DOFF=0, .CITER_ELINKNO=1, .DLASTSGA=(uint32_t)&mux_scatter_dma_src[ 1], .CSR=SGC_CSR, .BITER_ELINKNO=1}, 
+    {.SADDR=(uint32_t)&mux_pad[2], .SOFF=0, .ATTR=SGC_ATTR, .NBYTES_MLNO=4, .SLAST=0, .DADDR=MUX_BANK_S2, .DOFF=0, .CITER_ELINKNO=1, .DLASTSGA=(uint32_t)&mux_scatter_dma_src[ 2], .CSR=SGC_CSR, .BITER_ELINKNO=1}, 
+    {.SADDR=(uint32_t)&mux_pad[0], .SOFF=0, .ATTR=SGC_ATTR, .NBYTES_MLNO=4, .SLAST=0, .DADDR=MUX_BANK_S0, .DOFF=0, .CITER_ELINKNO=1, .DLASTSGA=(uint32_t)&mux_scatter_dma_src[ 3], .CSR=SGC_CSR, .BITER_ELINKNO=1}, 
+    {.SADDR=(uint32_t)&mux_pad[2], .SOFF=0, .ATTR=SGC_ATTR, .NBYTES_MLNO=4, .SLAST=0, .DADDR=MUX_BANK_C2, .DOFF=0, .CITER_ELINKNO=1, .DLASTSGA=(uint32_t)&mux_scatter_dma_src[ 4], .CSR=SGC_CSR, .BITER_ELINKNO=1}, 
+    {.SADDR=(uint32_t)&mux_pad[1], .SOFF=0, .ATTR=SGC_ATTR, .NBYTES_MLNO=4, .SLAST=0, .DADDR=MUX_BANK_S1, .DOFF=0, .CITER_ELINKNO=1, .DLASTSGA=(uint32_t)&mux_scatter_dma_src[ 5], .CSR=SGC_CSR, .BITER_ELINKNO=1}, 
+    {.SADDR=(uint32_t)&mux_pad[2], .SOFF=0, .ATTR=SGC_ATTR, .NBYTES_MLNO=4, .SLAST=0, .DADDR=MUX_BANK_S2, .DOFF=0, .CITER_ELINKNO=1, .DLASTSGA=(uint32_t)&mux_scatter_dma_src[ 6], .CSR=SGC_CSR, .BITER_ELINKNO=1}, 
+    {.SADDR=(uint32_t)&mux_pad[3], .SOFF=0, .ATTR=SGC_ATTR, .NBYTES_MLNO=4, .SLAST=0, .DADDR=MUX_BANK_C3, .DOFF=0, .CITER_ELINKNO=1, .DLASTSGA=(uint32_t)&mux_scatter_dma_src[ 7], .CSR=SGC_CSR, .BITER_ELINKNO=1}, 
+    {.SADDR=(uint32_t)&mux_pad[1], .SOFF=0, .ATTR=SGC_ATTR, .NBYTES_MLNO=4, .SLAST=0, .DADDR=MUX_BANK_C1, .DOFF=0, .CITER_ELINKNO=1, .DLASTSGA=(uint32_t)&mux_scatter_dma_src[ 8], .CSR=SGC_CSR, .BITER_ELINKNO=1}, 
+    {.SADDR=(uint32_t)&mux_pad[0], .SOFF=0, .ATTR=SGC_ATTR, .NBYTES_MLNO=4, .SLAST=0, .DADDR=MUX_BANK_C0, .DOFF=0, .CITER_ELINKNO=1, .DLASTSGA=(uint32_t)&mux_scatter_dma_src[ 9], .CSR=SGC_CSR, .BITER_ELINKNO=1}, 
+    {.SADDR=(uint32_t)&mux_pad[1], .SOFF=0, .ATTR=SGC_ATTR, .NBYTES_MLNO=4, .SLAST=0, .DADDR=MUX_BANK_S1, .DOFF=0, .CITER_ELINKNO=1, .DLASTSGA=(uint32_t)&mux_scatter_dma_src[10], .CSR=SGC_CSR, .BITER_ELINKNO=1}, 
+    {.SADDR=(uint32_t)&mux_pad[3], .SOFF=0, .ATTR=SGC_ATTR, .NBYTES_MLNO=4, .SLAST=0, .DADDR=MUX_BANK_S3, .DOFF=0, .CITER_ELINKNO=1, .DLASTSGA=(uint32_t)&mux_scatter_dma_src[11], .CSR=SGC_CSR, .BITER_ELINKNO=1}, 
+    {.SADDR=(uint32_t)&mux_pad[2], .SOFF=0, .ATTR=SGC_ATTR, .NBYTES_MLNO=4, .SLAST=0, .DADDR=MUX_BANK_C2, .DOFF=0, .CITER_ELINKNO=1, .DLASTSGA=(uint32_t)&mux_scatter_dma_src[12], .CSR=SGC_CSR, .BITER_ELINKNO=1}, 
+    {.SADDR=(uint32_t)&mux_pad[3], .SOFF=0, .ATTR=SGC_ATTR, .NBYTES_MLNO=4, .SLAST=0, .DADDR=MUX_BANK_C3, .DOFF=0, .CITER_ELINKNO=1, .DLASTSGA=(uint32_t)&mux_scatter_dma_src[13], .CSR=SGC_CSR, .BITER_ELINKNO=1}, 
+    {.SADDR=(uint32_t)&mux_pad[0], .SOFF=0, .ATTR=SGC_ATTR, .NBYTES_MLNO=4, .SLAST=0, .DADDR=MUX_BANK_S0, .DOFF=0, .CITER_ELINKNO=1, .DLASTSGA=(uint32_t)&mux_scatter_dma_src[14], .CSR=SGC_CSR, .BITER_ELINKNO=1}, 
+    {.SADDR=(uint32_t)&mux_pad[1], .SOFF=0, .ATTR=SGC_ATTR, .NBYTES_MLNO=4, .SLAST=0, .DADDR=MUX_BANK_C1, .DOFF=0, .CITER_ELINKNO=1, .DLASTSGA=(uint32_t)&mux_scatter_dma_src[15], .CSR=SGC_CSR, .BITER_ELINKNO=1}, 
+    {.SADDR=(uint32_t)&mux_pad[0], .SOFF=0, .ATTR=SGC_ATTR, .NBYTES_MLNO=4, .SLAST=0, .DADDR=MUX_BANK_C0, .DOFF=0, .CITER_ELINKNO=1, .DLASTSGA=(uint32_t)&mux_scatter_dma_src[ 0], .CSR=SGC_CSR, .BITER_ELINKNO=1} 
 };
 
 static const ADCConfig adccfg1 = {
@@ -92,17 +109,17 @@ void adc_config(void) {
 
     //CFG1 Regiser
     //0 bits: Normal power configuration, Short sample time, 
-    uint32_t CFG1 = ADCx_CFG1_ADIV(ADCx_CFG1_ADIV_DIV_2) |
+    uint32_t CFG1 = ADCx_CFG1_ADIV(ADCx_CFG1_ADIV_DIV_4) |
                     ADCx_CFG1_ADICLK(ADCx_CFG1_ADIVCLK_BUS_CLOCK) |
                     ADCx_CFG1_MODE(ADCx_CFG1_MODE_12_OR_13_BITS);
     //CFG2 Regiser
     //0 bits: Asynchronous clock output disabled, Normal conversion sequence selected
-    uint32_t CFG2 = ADCx_CFG2_MUXSEL | // xxB channel select
-                    ADCx_CFG2_ADHSC; // AD high speed clock bit, conversion takes extra 2 ADCLK
+    uint32_t CFG2 = ADCx_CFG2_MUXSEL; // | // xxB channel select
+                    //ADCx_CFG2_ADHSC; // AD high speed clock bit, conversion takes extra 2 ADCLK
 
-    uint32_t SC3 = ADCx_SC3_AVGE | ADCx_SC3_AVGS(ADCx_SC3_AVGS_AVERAGE_8_SAMPLES);
+    uint32_t SC3  = ADCx_SC3_AVGE | ADCx_SC3_AVGS(ADCx_SC3_AVGS_AVERAGE_4_SAMPLES);
 
-    uint32_t SC2 = ADCx_SC2_DMA_ENABLE; // | ADCx_SC2_TRIGGER_HARDWARE;
+    uint32_t SC2  = ADCx_SC2_DMA_ENABLE; // | ADCx_SC2_TRIGGER_HARDWARE;
 
     uint32_t SC1A = 0x1F; // Clear COCO bit from calibration
 
@@ -186,17 +203,7 @@ void analog_matrix_setup(void)
     DMA->TCD[KINETIS_HALLUI_ADC1S_DMA_CHANNEL].CITER_ELINKNO = ADC_GRP2_NUM_CHANNELS + 1;    
     DMA->TCD[KINETIS_HALLUI_ADC1S_DMA_CHANNEL].CSR = 0;
 
-    DMA->TCD[KINETIS_HALLUI_GPIO_DMA_CHANNEL].SADDR = (uint32_t)&mux_bit_flips[0];
-    DMA->TCD[KINETIS_HALLUI_GPIO_DMA_CHANNEL].SOFF = 1; // source increment each transfer
-    DMA->TCD[KINETIS_HALLUI_GPIO_DMA_CHANNEL].ATTR = DMA_ATTR_SSIZE(0) | DMA_ATTR_DSIZE(0); // byte sizes: 1B=0, 2B=1, 4B=2, 16B=4
-    DMA->TCD[KINETIS_HALLUI_GPIO_DMA_CHANNEL].NBYTES_MLNO = 1;     // bytes per transfer
-    DMA->TCD[KINETIS_HALLUI_GPIO_DMA_CHANNEL].SLAST = -1 * MULTIPLEXER_NUM_CHANNELS;
-    DMA->TCD[KINETIS_HALLUI_GPIO_DMA_CHANNEL].DADDR = (uint32_t)&GPIOD->PTOR;// where to write to
-    DMA->TCD[KINETIS_HALLUI_GPIO_DMA_CHANNEL].DOFF = 0; // destination increment
-    DMA->TCD[KINETIS_HALLUI_GPIO_DMA_CHANNEL].DLASTSGA = 0;
-    DMA->TCD[KINETIS_HALLUI_GPIO_DMA_CHANNEL].BITER_ELINKYES = DMA_BITER_ELINKYES_ELINK_MASK | DMA_BITER_ELINKYES_LINKCH(KINETIS_HALLUI_LINK_DMA_CHANNEL) | MULTIPLEXER_NUM_CHANNELS;
-    DMA->TCD[KINETIS_HALLUI_GPIO_DMA_CHANNEL].CITER_ELINKYES = DMA_CITER_ELINKYES_ELINK_MASK | DMA_CITER_ELINKYES_LINKCH(KINETIS_HALLUI_LINK_DMA_CHANNEL) | MULTIPLEXER_NUM_CHANNELS;    
-    DMA->TCD[KINETIS_HALLUI_GPIO_DMA_CHANNEL].CSR = DMA_CSR_MAJORELINK_MASK | DMA_CSR_MAJORLINKCH(KINETIS_HALLUI_LINK_DMA_CHANNEL);
+    DMA->TCD[KINETIS_HALLUI_GPIO_DMA_CHANNEL] = mux_scatter_dma_src[0];
 
     DMA->TCD[KINETIS_HALLUI_LINK_DMA_CHANNEL].SADDR = (uint32_t)&link_dma_channel;
     DMA->TCD[KINETIS_HALLUI_LINK_DMA_CHANNEL].SOFF = 0; // source increment each transfer
