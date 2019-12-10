@@ -11,9 +11,6 @@
 
 /* matrix state(1:on, 0:off) */
 static matrix_row_t matrix[MATRIX_ROWS];
-static matrix_row_t matrix_debouncing[MATRIX_ROWS];
-static bool debouncing = false;
-static uint16_t debouncing_time = 0;
 
 #ifdef DEBUG_MATRIX_SCAN_RATE
 uint32_t matrix_timer;
@@ -36,14 +33,18 @@ uint32_t matrix_scan_count;
 #define MULTIPLEXER_NUM_CHANNELS 16
 //static uint8_t curent_mux_channel = 0;
 static volatile adcsample_t samples[(ADC_GRP1_NUM_CHANNELS + ADC_GRP2_NUM_CHANNELS) * MULTIPLEXER_NUM_CHANNELS];
+static volatile uint8_t matrix_scan_complete_flag = 0;
+static const uint8_t scan_compl = 1;
+static const uint8_t link_dma_channel = KINETIS_HALLUI_ADC1S_DMA_CHANNEL;
 static uint8_t adc_grp1_channels[ADC_GRP1_NUM_CHANNELS + 1] = {5, 14, 13, 12, 0x1F}; // ADCx_SC1n_AIEN 0x1F
 static uint8_t adc_grp2_channels[ADC_GRP1_NUM_CHANNELS + 1] = {8,  9,  4,  5, 0x1F}; 
-static uint8_t link_dma_channel = KINETIS_HALLUI_ADC1S_DMA_CHANNEL;
 
 #define MULTIPLEXER_S0 LINE_PIN2
 #define MULTIPLEXER_S1 LINE_PIN3
 #define MULTIPLEXER_S2 LINE_PIN4
 #define MULTIPLEXER_S3 LINE_PIN5
+
+#define ADC_SCOPE_TRIG_OUT_PIN LINE_PIN6 //Oscilloscope trigger in
 
 static uint32_t mux_pad[4] = {
     1 << PAL_PAD(MULTIPLEXER_S0),
@@ -52,8 +53,18 @@ static uint32_t mux_pad[4] = {
     1 << PAL_PAD(MULTIPLEXER_S3),
 };
 
-#define SGC_CSR  ((uint32_t)(DMA_CSR_ESG_MASK | DMA_CSR_MAJORELINK_MASK | DMA_CSR_MAJORLINKCH(KINETIS_HALLUI_LINK_DMA_CHANNEL)))
-#define SGC_ATTR ((uint32_t)(DMA_ATTR_SSIZE(2) | DMA_ATTR_DSIZE(2))) // 4 bytes
+#ifdef ADC_SCOPE_TRIG_OUT_PIN
+static uint32_t trig_pad = 1 << PAL_PAD(ADC_SCOPE_TRIG_OUT_PIN);
+#define TRIG_BANK_S (uint32_t)&(PAL_PORT(MULTIPLEXER_S3))->PSOR
+#define TRIG_BANK_C (uint32_t)&(PAL_PORT(MULTIPLEXER_S3))->PCOR
+#endif
+
+#define SGC_CSR              ((uint32_t)(DMA_CSR_ESG_MASK | DMA_CSR_MAJORELINK_MASK | DMA_CSR_MAJORLINKCH(KINETIS_HALLUI_LINK_DMA_CHANNEL)))
+#define SGC_CSR_AUTOS        ((uint32_t)(DMA_CSR_ESG_MASK | DMA_CSR_MAJORELINK_MASK | DMA_CSR_MAJORLINKCH(KINETIS_HALLUI_LINK_DMA_CHANNEL) | DMA_CSR_START_MASK))
+#define SGC_CSR_NOLINK       ((uint32_t)(DMA_CSR_ESG_MASK))
+#define SGC_CSR_NOLINK_AUTOS ((uint32_t)(DMA_CSR_ESG_MASK | DMA_CSR_START_MASK))
+#define SGC_ATTR4 ((uint32_t)(DMA_ATTR_SSIZE(2) | DMA_ATTR_DSIZE(2))) // 4 bytes
+#define SGC_ATTR1 ((uint32_t)(DMA_ATTR_SSIZE(0) | DMA_ATTR_DSIZE(0))) // 1 byte
 #define MUX_BANK_S0 (uint32_t)&(PAL_PORT(MULTIPLEXER_S0))->PSOR
 #define MUX_BANK_S1 (uint32_t)&(PAL_PORT(MULTIPLEXER_S1))->PSOR
 #define MUX_BANK_S2 (uint32_t)&(PAL_PORT(MULTIPLEXER_S2))->PSOR
@@ -62,24 +73,42 @@ static uint32_t mux_pad[4] = {
 #define MUX_BANK_C1 (uint32_t)&(PAL_PORT(MULTIPLEXER_S1))->PCOR
 #define MUX_BANK_C2 (uint32_t)&(PAL_PORT(MULTIPLEXER_S2))->PCOR
 #define MUX_BANK_C3 (uint32_t)&(PAL_PORT(MULTIPLEXER_S3))->PCOR
+#define MATRIX_FLAG (uint32_t)&matrix_scan_complete_flag
 
-DMA_TCD_TypeDef mux_scatter_dma_src[MULTIPLEXER_NUM_CHANNELS] = {
-    {.SADDR=(uint32_t)&mux_pad[3], .SOFF=0, .ATTR=SGC_ATTR, .NBYTES_MLNO=4, .SLAST=0, .DADDR=MUX_BANK_S3, .DOFF=0, .CITER_ELINKNO=1, .DLASTSGA=(uint32_t)&mux_scatter_dma_src[ 1], .CSR=SGC_CSR, .BITER_ELINKNO=1}, 
-    {.SADDR=(uint32_t)&mux_pad[2], .SOFF=0, .ATTR=SGC_ATTR, .NBYTES_MLNO=4, .SLAST=0, .DADDR=MUX_BANK_S2, .DOFF=0, .CITER_ELINKNO=1, .DLASTSGA=(uint32_t)&mux_scatter_dma_src[ 2], .CSR=SGC_CSR, .BITER_ELINKNO=1}, 
-    {.SADDR=(uint32_t)&mux_pad[0], .SOFF=0, .ATTR=SGC_ATTR, .NBYTES_MLNO=4, .SLAST=0, .DADDR=MUX_BANK_S0, .DOFF=0, .CITER_ELINKNO=1, .DLASTSGA=(uint32_t)&mux_scatter_dma_src[ 3], .CSR=SGC_CSR, .BITER_ELINKNO=1}, 
-    {.SADDR=(uint32_t)&mux_pad[2], .SOFF=0, .ATTR=SGC_ATTR, .NBYTES_MLNO=4, .SLAST=0, .DADDR=MUX_BANK_C2, .DOFF=0, .CITER_ELINKNO=1, .DLASTSGA=(uint32_t)&mux_scatter_dma_src[ 4], .CSR=SGC_CSR, .BITER_ELINKNO=1}, 
-    {.SADDR=(uint32_t)&mux_pad[1], .SOFF=0, .ATTR=SGC_ATTR, .NBYTES_MLNO=4, .SLAST=0, .DADDR=MUX_BANK_S1, .DOFF=0, .CITER_ELINKNO=1, .DLASTSGA=(uint32_t)&mux_scatter_dma_src[ 5], .CSR=SGC_CSR, .BITER_ELINKNO=1}, 
-    {.SADDR=(uint32_t)&mux_pad[2], .SOFF=0, .ATTR=SGC_ATTR, .NBYTES_MLNO=4, .SLAST=0, .DADDR=MUX_BANK_S2, .DOFF=0, .CITER_ELINKNO=1, .DLASTSGA=(uint32_t)&mux_scatter_dma_src[ 6], .CSR=SGC_CSR, .BITER_ELINKNO=1}, 
-    {.SADDR=(uint32_t)&mux_pad[3], .SOFF=0, .ATTR=SGC_ATTR, .NBYTES_MLNO=4, .SLAST=0, .DADDR=MUX_BANK_C3, .DOFF=0, .CITER_ELINKNO=1, .DLASTSGA=(uint32_t)&mux_scatter_dma_src[ 7], .CSR=SGC_CSR, .BITER_ELINKNO=1}, 
-    {.SADDR=(uint32_t)&mux_pad[1], .SOFF=0, .ATTR=SGC_ATTR, .NBYTES_MLNO=4, .SLAST=0, .DADDR=MUX_BANK_C1, .DOFF=0, .CITER_ELINKNO=1, .DLASTSGA=(uint32_t)&mux_scatter_dma_src[ 8], .CSR=SGC_CSR, .BITER_ELINKNO=1}, 
-    {.SADDR=(uint32_t)&mux_pad[0], .SOFF=0, .ATTR=SGC_ATTR, .NBYTES_MLNO=4, .SLAST=0, .DADDR=MUX_BANK_C0, .DOFF=0, .CITER_ELINKNO=1, .DLASTSGA=(uint32_t)&mux_scatter_dma_src[ 9], .CSR=SGC_CSR, .BITER_ELINKNO=1}, 
-    {.SADDR=(uint32_t)&mux_pad[1], .SOFF=0, .ATTR=SGC_ATTR, .NBYTES_MLNO=4, .SLAST=0, .DADDR=MUX_BANK_S1, .DOFF=0, .CITER_ELINKNO=1, .DLASTSGA=(uint32_t)&mux_scatter_dma_src[10], .CSR=SGC_CSR, .BITER_ELINKNO=1}, 
-    {.SADDR=(uint32_t)&mux_pad[3], .SOFF=0, .ATTR=SGC_ATTR, .NBYTES_MLNO=4, .SLAST=0, .DADDR=MUX_BANK_S3, .DOFF=0, .CITER_ELINKNO=1, .DLASTSGA=(uint32_t)&mux_scatter_dma_src[11], .CSR=SGC_CSR, .BITER_ELINKNO=1}, 
-    {.SADDR=(uint32_t)&mux_pad[2], .SOFF=0, .ATTR=SGC_ATTR, .NBYTES_MLNO=4, .SLAST=0, .DADDR=MUX_BANK_C2, .DOFF=0, .CITER_ELINKNO=1, .DLASTSGA=(uint32_t)&mux_scatter_dma_src[12], .CSR=SGC_CSR, .BITER_ELINKNO=1}, 
-    {.SADDR=(uint32_t)&mux_pad[3], .SOFF=0, .ATTR=SGC_ATTR, .NBYTES_MLNO=4, .SLAST=0, .DADDR=MUX_BANK_C3, .DOFF=0, .CITER_ELINKNO=1, .DLASTSGA=(uint32_t)&mux_scatter_dma_src[13], .CSR=SGC_CSR, .BITER_ELINKNO=1}, 
-    {.SADDR=(uint32_t)&mux_pad[0], .SOFF=0, .ATTR=SGC_ATTR, .NBYTES_MLNO=4, .SLAST=0, .DADDR=MUX_BANK_S0, .DOFF=0, .CITER_ELINKNO=1, .DLASTSGA=(uint32_t)&mux_scatter_dma_src[14], .CSR=SGC_CSR, .BITER_ELINKNO=1}, 
-    {.SADDR=(uint32_t)&mux_pad[1], .SOFF=0, .ATTR=SGC_ATTR, .NBYTES_MLNO=4, .SLAST=0, .DADDR=MUX_BANK_C1, .DOFF=0, .CITER_ELINKNO=1, .DLASTSGA=(uint32_t)&mux_scatter_dma_src[15], .CSR=SGC_CSR, .BITER_ELINKNO=1}, 
-    {.SADDR=(uint32_t)&mux_pad[0], .SOFF=0, .ATTR=SGC_ATTR, .NBYTES_MLNO=4, .SLAST=0, .DADDR=MUX_BANK_C0, .DOFF=0, .CITER_ELINKNO=1, .DLASTSGA=(uint32_t)&mux_scatter_dma_src[ 0], .CSR=SGC_CSR, .BITER_ELINKNO=1} 
+DMA_TCD_TypeDef mux_scatter_dma_src[] __attribute__ ((aligned (32))) = {
+    {.SADDR=(uint32_t)&mux_pad[3], .SOFF=0, .ATTR=SGC_ATTR4, .NBYTES_MLNO=4, .SLAST=0, .DADDR=MUX_BANK_S3, .DOFF=0, .CITER_ELINKNO=1, .DLASTSGA=(uint32_t)&mux_scatter_dma_src[ 1], .CSR=SGC_CSR, .BITER_ELINKNO=1}, 
+    {.SADDR=(uint32_t)&mux_pad[2], .SOFF=0, .ATTR=SGC_ATTR4, .NBYTES_MLNO=4, .SLAST=0, .DADDR=MUX_BANK_S2, .DOFF=0, .CITER_ELINKNO=1, .DLASTSGA=(uint32_t)&mux_scatter_dma_src[ 2], .CSR=SGC_CSR, .BITER_ELINKNO=1}, 
+    {.SADDR=(uint32_t)&mux_pad[0], .SOFF=0, .ATTR=SGC_ATTR4, .NBYTES_MLNO=4, .SLAST=0, .DADDR=MUX_BANK_S0, .DOFF=0, .CITER_ELINKNO=1, .DLASTSGA=(uint32_t)&mux_scatter_dma_src[ 3], .CSR=SGC_CSR, .BITER_ELINKNO=1}, 
+    {.SADDR=(uint32_t)&mux_pad[2], .SOFF=0, .ATTR=SGC_ATTR4, .NBYTES_MLNO=4, .SLAST=0, .DADDR=MUX_BANK_C2, .DOFF=0, .CITER_ELINKNO=1, .DLASTSGA=(uint32_t)&mux_scatter_dma_src[ 4], .CSR=SGC_CSR, .BITER_ELINKNO=1}, 
+    {.SADDR=(uint32_t)&mux_pad[1], .SOFF=0, .ATTR=SGC_ATTR4, .NBYTES_MLNO=4, .SLAST=0, .DADDR=MUX_BANK_S1, .DOFF=0, .CITER_ELINKNO=1, .DLASTSGA=(uint32_t)&mux_scatter_dma_src[ 5], .CSR=SGC_CSR, .BITER_ELINKNO=1}, 
+    {.SADDR=(uint32_t)&mux_pad[2], .SOFF=0, .ATTR=SGC_ATTR4, .NBYTES_MLNO=4, .SLAST=0, .DADDR=MUX_BANK_S2, .DOFF=0, .CITER_ELINKNO=1, .DLASTSGA=(uint32_t)&mux_scatter_dma_src[ 6], .CSR=SGC_CSR, .BITER_ELINKNO=1}, 
+    {.SADDR=(uint32_t)&mux_pad[3], .SOFF=0, .ATTR=SGC_ATTR4, .NBYTES_MLNO=4, .SLAST=0, .DADDR=MUX_BANK_C3, .DOFF=0, .CITER_ELINKNO=1, .DLASTSGA=(uint32_t)&mux_scatter_dma_src[ 7], .CSR=SGC_CSR, .BITER_ELINKNO=1}, 
+    {.SADDR=(uint32_t)&mux_pad[1], .SOFF=0, .ATTR=SGC_ATTR4, .NBYTES_MLNO=4, .SLAST=0, .DADDR=MUX_BANK_C1, .DOFF=0, .CITER_ELINKNO=1, .DLASTSGA=(uint32_t)&mux_scatter_dma_src[ 8], .CSR=SGC_CSR, .BITER_ELINKNO=1}, 
+    {.SADDR=(uint32_t)&mux_pad[0], .SOFF=0, .ATTR=SGC_ATTR4, .NBYTES_MLNO=4, .SLAST=0, .DADDR=MUX_BANK_C0, .DOFF=0, .CITER_ELINKNO=1, .DLASTSGA=(uint32_t)&mux_scatter_dma_src[ 9], .CSR=SGC_CSR, .BITER_ELINKNO=1}, 
+    {.SADDR=(uint32_t)&mux_pad[1], .SOFF=0, .ATTR=SGC_ATTR4, .NBYTES_MLNO=4, .SLAST=0, .DADDR=MUX_BANK_S1, .DOFF=0, .CITER_ELINKNO=1, .DLASTSGA=(uint32_t)&mux_scatter_dma_src[10], .CSR=SGC_CSR, .BITER_ELINKNO=1}, 
+    {.SADDR=(uint32_t)&mux_pad[3], .SOFF=0, .ATTR=SGC_ATTR4, .NBYTES_MLNO=4, .SLAST=0, .DADDR=MUX_BANK_S3, .DOFF=0, .CITER_ELINKNO=1, .DLASTSGA=(uint32_t)&mux_scatter_dma_src[11], .CSR=SGC_CSR, .BITER_ELINKNO=1}, 
+    {.SADDR=(uint32_t)&mux_pad[2], .SOFF=0, .ATTR=SGC_ATTR4, .NBYTES_MLNO=4, .SLAST=0, .DADDR=MUX_BANK_C2, .DOFF=0, .CITER_ELINKNO=1, .DLASTSGA=(uint32_t)&mux_scatter_dma_src[12], .CSR=SGC_CSR, .BITER_ELINKNO=1}, 
+    {.SADDR=(uint32_t)&mux_pad[3], .SOFF=0, .ATTR=SGC_ATTR4, .NBYTES_MLNO=4, .SLAST=0, .DADDR=MUX_BANK_C3, .DOFF=0, .CITER_ELINKNO=1, .DLASTSGA=(uint32_t)&mux_scatter_dma_src[13], .CSR=SGC_CSR, .BITER_ELINKNO=1}, 
+    {.SADDR=(uint32_t)&mux_pad[0], .SOFF=0, .ATTR=SGC_ATTR4, .NBYTES_MLNO=4, .SLAST=0, .DADDR=MUX_BANK_S0, .DOFF=0, .CITER_ELINKNO=1, .DLASTSGA=(uint32_t)&mux_scatter_dma_src[14], .CSR=SGC_CSR, .BITER_ELINKNO=1}, 
+#ifndef ADC_SCOPE_TRIG_OUT_PIN
+    {.SADDR=(uint32_t)&mux_pad[1], .SOFF=0, .ATTR=SGC_ATTR4, .NBYTES_MLNO=4, .SLAST=0, .DADDR=MUX_BANK_C1, .DOFF=0, .CITER_ELINKNO=1, .DLASTSGA=(uint32_t)&mux_scatter_dma_src[15], .CSR=SGC_CSR, .BITER_ELINKNO=1}, 
+    {.SADDR=(uint32_t)&mux_pad[0], .SOFF=0, .ATTR=SGC_ATTR4, .NBYTES_MLNO=4, .SLAST=0, .DADDR=MUX_BANK_C0, .DOFF=0, .CITER_ELINKNO=1, .DLASTSGA=(uint32_t)&mux_scatter_dma_src[16], .CSR=SGC_CSR_NOLINK, .BITER_ELINKNO=1}, 
+    {.SADDR=(uint32_t)&scan_compl, .SOFF=0, .ATTR=SGC_ATTR1, .NBYTES_MLNO=1, .SLAST=0, .DADDR=MATRIX_FLAG, .DOFF=0, .CITER_ELINKNO=1, .DLASTSGA=(uint32_t)&mux_scatter_dma_src[ 0], .CSR=SGC_CSR_AUTOS,  .BITER_ELINKNO=1} 
+#else
+    {.SADDR=(uint32_t)&trig_pad,   .SOFF=0, .ATTR=SGC_ATTR4, .NBYTES_MLNO=4, .SLAST=0, .DADDR=TRIG_BANK_S, .DOFF=0, .CITER_ELINKNO=1, .DLASTSGA=(uint32_t)&mux_scatter_dma_src[15], .CSR=SGC_CSR_NOLINK, .BITER_ELINKNO=1}, 
+    {.SADDR=(uint32_t)&mux_pad[1], .SOFF=0, .ATTR=SGC_ATTR4, .NBYTES_MLNO=4, .SLAST=0, .DADDR=MUX_BANK_C1, .DOFF=0, .CITER_ELINKNO=1, .DLASTSGA=(uint32_t)&mux_scatter_dma_src[16], .CSR=SGC_CSR_AUTOS,  .BITER_ELINKNO=1}, 
+    {.SADDR=(uint32_t)&trig_pad,   .SOFF=0, .ATTR=SGC_ATTR4, .NBYTES_MLNO=4, .SLAST=0, .DADDR=TRIG_BANK_C, .DOFF=0, .CITER_ELINKNO=1, .DLASTSGA=(uint32_t)&mux_scatter_dma_src[17], .CSR=SGC_CSR_NOLINK,  .BITER_ELINKNO=1}, 
+    {.SADDR=(uint32_t)&mux_pad[0], .SOFF=0, .ATTR=SGC_ATTR4, .NBYTES_MLNO=4, .SLAST=0, .DADDR=MUX_BANK_C0, .DOFF=0, .CITER_ELINKNO=1, .DLASTSGA=(uint32_t)&mux_scatter_dma_src[18], .CSR=SGC_CSR_NOLINK_AUTOS, .BITER_ELINKNO=1}, 
+    {.SADDR=(uint32_t)&scan_compl, .SOFF=0, .ATTR=SGC_ATTR1, .NBYTES_MLNO=1, .SLAST=0, .DADDR=MATRIX_FLAG, .DOFF=0, .CITER_ELINKNO=1, .DLASTSGA=(uint32_t)&mux_scatter_dma_src[ 0], .CSR=SGC_CSR_AUTOS,  .BITER_ELINKNO=1} 
+#endif
+};
+
+static uint32_t pdb_sc_val = 0;
+
+DMA_TCD_TypeDef adc_delayed_restart[] __attribute__ ((aligned (32))) = {
+    {.SADDR=(uint32_t)&pdb_sc_val,       .SOFF=0, .ATTR=SGC_ATTR4, .NBYTES_MLNO=4, .SLAST=0, .DADDR=(uint32_t)&PDB->SC,   .DOFF=0, .CITER_ELINKNO=1, .DLASTSGA=(uint32_t)&adc_delayed_restart[1], .CSR=SGC_CSR_NOLINK, .BITER_ELINKNO=1}, 
+    {.SADDR=(uint32_t)&link_dma_channel, .SOFF=0, .ATTR=SGC_ATTR1, .NBYTES_MLNO=1, .SLAST=0, .DADDR=(uint32_t)&DMA->SSRT, .DOFF=0, .CITER_ELINKNO=1, .DLASTSGA=(uint32_t)&adc_delayed_restart[0], .BITER_ELINKNO=1, 
+        .CSR = DMA_CSR_ESG_MASK | DMA_CSR_MAJORELINK_MASK | DMA_CSR_MAJORLINKCH(KINETIS_HALLUI_ADC0S_DMA_CHANNEL)}
 };
 
 static const ADCConfig adccfg1 = {
@@ -109,7 +138,7 @@ void adc_config(void) {
 
     //CFG1 Regiser
     //0 bits: Normal power configuration, Short sample time, 
-    uint32_t CFG1 = ADCx_CFG1_ADIV(ADCx_CFG1_ADIV_DIV_4) |
+    uint32_t CFG1 = ADCx_CFG1_ADIV(ADCx_CFG1_ADIV_DIV_2) |
                     ADCx_CFG1_ADICLK(ADCx_CFG1_ADIVCLK_BUS_CLOCK) |
                     ADCx_CFG1_MODE(ADCx_CFG1_MODE_12_OR_13_BITS);
     //CFG2 Regiser
@@ -136,7 +165,7 @@ void adc_config(void) {
     ADCD2.adc->SC1A = SC1A;
 }
 
-void analog_matrix_setup(void)
+void setup_adc_dma_scanning(void)
 {
     adc_config();
 
@@ -205,20 +234,23 @@ void analog_matrix_setup(void)
 
     DMA->TCD[KINETIS_HALLUI_GPIO_DMA_CHANNEL] = mux_scatter_dma_src[0];
 
-    DMA->TCD[KINETIS_HALLUI_LINK_DMA_CHANNEL].SADDR = (uint32_t)&link_dma_channel;
-    DMA->TCD[KINETIS_HALLUI_LINK_DMA_CHANNEL].SOFF = 0; // source increment each transfer
-    DMA->TCD[KINETIS_HALLUI_LINK_DMA_CHANNEL].ATTR = DMA_ATTR_SSIZE(0) | DMA_ATTR_DSIZE(0); // byte sizes: 1B=0, 2B=1, 4B=2, 16B=4
-    DMA->TCD[KINETIS_HALLUI_LINK_DMA_CHANNEL].NBYTES_MLNO = 1;     // bytes per transfer
-    DMA->TCD[KINETIS_HALLUI_LINK_DMA_CHANNEL].SLAST = 0;
-    DMA->TCD[KINETIS_HALLUI_LINK_DMA_CHANNEL].DADDR = (uint32_t)&DMA->SSRT;// where to write to
-    DMA->TCD[KINETIS_HALLUI_LINK_DMA_CHANNEL].DOFF = 0; // destination increment
-    DMA->TCD[KINETIS_HALLUI_LINK_DMA_CHANNEL].DLASTSGA = 0;
-    DMA->TCD[KINETIS_HALLUI_LINK_DMA_CHANNEL].BITER_ELINKYES = DMA_BITER_ELINKYES_ELINK_MASK | DMA_BITER_ELINKYES_LINKCH(KINETIS_HALLUI_ADC0S_DMA_CHANNEL) | MULTIPLEXER_NUM_CHANNELS;
-    DMA->TCD[KINETIS_HALLUI_LINK_DMA_CHANNEL].CITER_ELINKYES = DMA_CITER_ELINKYES_ELINK_MASK | DMA_CITER_ELINKYES_LINKCH(KINETIS_HALLUI_ADC0S_DMA_CHANNEL) | MULTIPLEXER_NUM_CHANNELS;    
-    DMA->TCD[KINETIS_HALLUI_LINK_DMA_CHANNEL].CSR = DMA_CSR_MAJORELINK_MASK | DMA_CSR_MAJORLINKCH(KINETIS_HALLUI_ADC0S_DMA_CHANNEL);
+    SIM->SCGC6 |= SIM_SCGC6_PDB;
+    pdb_sc_val = PDB_SC_SWTRIG | PDB_SC_TRGSEL(PDB_SC_TRGSEL_SW) | PDB_SC_DMAEN | 
+                 PDB_SC_MULT(PDB_SC_MULT_FACTOR1) | PDB_SC_PRESCALER(PDB_SC_PRESCALER_DIV1) | //BUS CLOCK = 48MHz ... 20.83nS period
+                 PDB_SC_PDBEN;
+    PDB->SC = pdb_sc_val;
+    pdb_sc_val |= PDB_SC_LDOK;
+    uint16_t delay = 50; //1uS delay (plus extra ~1.2uS triggering DMA->PDB->DMA) 
+    PDB->IDLY = PDB_IDLY(delay);
+    PDB->MOD = PDB_MOD(delay);
+
+    DMA->TCD[KINETIS_HALLUI_LINK_DMA_CHANNEL] = adc_delayed_restart[0];
+    DMAMUX->CHCFG[KINETIS_HALLUI_LINK_DMA_CHANNEL] = DMAMUX_CHCFGn_ENBL | DMAMUX_CHCFGn_SOURCE(48); //PDB source = 48
+    DMA->SERQ = KINETIS_HALLUI_LINK_DMA_CHANNEL; //enable hardware request, this is not needed for DMA to DMA linked channels
 
     //explicit SW start of the adc/dma loop
     DMA->SSRT = KINETIS_HALLUI_LINK_DMA_CHANNEL;
+
 }
 
 
@@ -230,10 +262,14 @@ void matrix_init(void)
     #endif
 
     /* Multiplexer channel select pins */
-    palSetLineMode(MULTIPLEXER_S0,   PAL_MODE_OUTPUT_PUSHPULL);
-    palSetLineMode(MULTIPLEXER_S1,   PAL_MODE_OUTPUT_PUSHPULL);
-    palSetLineMode(MULTIPLEXER_S2,   PAL_MODE_OUTPUT_PUSHPULL);
-    palSetLineMode(MULTIPLEXER_S3,   PAL_MODE_OUTPUT_PUSHPULL);
+    palSetLineMode(MULTIPLEXER_S0, PAL_MODE_OUTPUT_PUSHPULL);
+    palSetLineMode(MULTIPLEXER_S1, PAL_MODE_OUTPUT_PUSHPULL);
+    palSetLineMode(MULTIPLEXER_S2, PAL_MODE_OUTPUT_PUSHPULL);
+    palSetLineMode(MULTIPLEXER_S3, PAL_MODE_OUTPUT_PUSHPULL);
+
+    #ifdef ADC_SCOPE_TRIG_OUT_PIN
+    palSetLineMode(ADC_SCOPE_TRIG_OUT_PIN, PAL_MODE_OUTPUT_PUSHPULL);
+    #endif
 
     // clear the pins, start at channel 0 (not sure this is needed)
     palWriteLine(MULTIPLEXER_S0, 0);
@@ -242,32 +278,34 @@ void matrix_init(void)
     palWriteLine(MULTIPLEXER_S3, 0);
 
     /* Analog signal pins (one per each multiplexer) */
+    palSetLineMode(LINE_PIN14, PAL_MODE_INPUT_ANALOG);
     palSetLineMode(LINE_PIN15, PAL_MODE_INPUT_ANALOG);
     palSetLineMode(LINE_PIN18, PAL_MODE_INPUT_ANALOG);
     palSetLineMode(LINE_PIN19, PAL_MODE_INPUT_ANALOG);
-    palSetLineMode(LINE_PIN22, PAL_MODE_INPUT_ANALOG);
-  
-    analog_matrix_setup(); //CPU-free background analog matrix scanning using DMA links
+
+    palSetLineMode(LINE_PIN16, PAL_MODE_INPUT_ANALOG);
+    palSetLineMode(LINE_PIN17, PAL_MODE_INPUT_ANALOG);
+    palSetLineMode(LINE_PIN27, PAL_MODE_INPUT_ANALOG);
+    palSetLineMode(LINE_PIN28, PAL_MODE_INPUT_ANALOG);
+    
+    setup_adc_dma_scanning(); //CPU-free background analog matrix scanning using DMA+PDB
     
     memset(matrix, 0, MATRIX_ROWS * sizeof(matrix_row_t));
-    memset(matrix_debouncing, 0, MATRIX_ROWS * sizeof(matrix_row_t));
 
     matrix_init_quantum();
 }
 
-static uint16_t b_min = 4000, b_max = 0;
-
-#define ADC_VAL_LOW 1130
-#define ADC_VAL_HIGH 2350
+#define ADC_VAL_LOW 1900
+#define ADC_VAL_HIGH 3980
 #define ADC_VAL_HYST 0.2 // 20 percent of fullscale
 #define ADC_VAL_CENTER_OFFSET +0.05
 const static uint16_t thrs_trigger   = (ADC_VAL_HIGH + ADC_VAL_LOW)/2 - ((ADC_VAL_HIGH + ADC_VAL_LOW)/2)*(ADC_VAL_HYST / 2) + ((ADC_VAL_HIGH + ADC_VAL_LOW)/2)*ADC_VAL_CENTER_OFFSET;
 const static uint16_t thrs_untrigger = (ADC_VAL_HIGH + ADC_VAL_LOW)/2 + ((ADC_VAL_HIGH + ADC_VAL_LOW)/2)*(ADC_VAL_HYST / 2) + ((ADC_VAL_HIGH + ADC_VAL_LOW)/2)*ADC_VAL_CENTER_OFFSET;
 
-static bool stored_states[1] = {false};
+static adcsample_t min0 = 0, max0 = 0;
+static adcsample_t min1 = 0, max1 = 0;
 
-static uint32_t time_pressed = 0;
-
+static uint32_t adc_scan_count = 0;
 
 uint8_t matrix_scan(void)
 {
@@ -276,93 +314,79 @@ uint8_t matrix_scan(void)
 
       uint32_t timer_now = timer_read32();
       if (TIMER_DIFF_32(timer_now, matrix_timer)>1000) {
-        //dprintf("matrix scan frequency: %u \n", matrix_scan_count);
-        /*if (debug_matrix) {
-            matrix_print();
-        }*/
-
         matrix_timer = timer_now;
         matrix_scan_count = 0;
       }
     #endif
 
+    uint8_t changed = 0;
+    
+    if (matrix_scan_count == 0) {
+        //xprintf("dma error reg: %u \n", DMA->ES);
+        //xprintf("DLASTSGA: %u \n", ((uint32_t)&mux_scatter_dma_src[ 1])%32);
+    
+        /*
+        xprintf("trig: %u // untrig: %u \n", thrs_trigger, thrs_untrigger);
+        for (int x = 0; x < MATRIX_ROWS; x++) {
+            xprintf("row: %u - ", x);
+            for (int y = 0; y < MATRIX_COLS; y++) {
+                adcsample_t sample = samples[y + x*MATRIX_COLS];
+                xprintf("%u ", sample);
+            }
+            xprintf("\n");
+        }*/
+    
+        xprintf("min0: %u max0: %u   diff: %u \n", min0, max0, max0 - min0);
+        xprintf("min1: %u max1: %u   diff: %u \n", min1, max1, max1 - min1);
+        min0 = 65535, max0 = 0;
+        min1 = 65535, max1 = 0;
+        //matrix_print();
+        xprintf("adc scan count: %u \n", adc_scan_count);
+        adc_scan_count = 0;
 
-    for (int row = 0; row < MATRIX_ROWS; row++) {
-        matrix_row_t data = 0;
-
-        //generate digital data from analog readings
-
-        if (b_min > samples[0])
-            b_min = samples[0];
-
-        if (b_max < samples[0])
-            b_max = samples[0];
-
-        //uint16_t avg = (samples[0]); // + samples[0 + ADC_GRP1_NUM_CHANNELS] + samples[0 + ADC_CH_NUM*2]) / 3;
-
-
-        if (matrix_scan_count == 1) {
-            //printf("number: %u avg: %u min: %u max: %u pp: %u \n", samples[0], avg, b_min, b_max, b_max - b_min);
-            printf("BUFF : %u %u %u %u %u %u %u %u   %u \n", samples[0], samples[1], samples[2], samples[3], samples[4], samples[5], samples[6], samples[7], DMA->ES);
-            printf("BUFF2: %u %u %u %u %u %u %u %u   %u \n", samples[64+0], samples[64+1], samples[64+2], samples[64+3], samples[64+4], samples[64+5], samples[64+6], samples[64+7], DMA->ES);
-            //printf("%u %u\n", SIM->FCFG1, MCM->CR);
-            //printf("%u \n", DMA->TCD[KINETIS_HALLUI_ADC0S_DMA_CHANNEL].BITER_ELINKNO);
-            b_min = 65535, b_max = 0;
-
-            //ADCD1.adc->SC1A = ADCx_SC1n_ADCH(ADC_AD15);
-            /*
-            adcstate_t state = ADCD1.state;
-            switch(state) {
-                case ADC_UNINIT:   printf("ADC_UNINIT %u", ADC_UNINIT);   break;
-                case ADC_STOP:     printf("ADC_STOP %u", ADC_STOP);     break;
-                case ADC_READY:    printf("ADC_READY %u", ADC_READY);    break;
-                case ADC_ACTIVE:   printf("ADC_ACTIVE %u", ADC_ACTIVE);   break;
-                case ADC_COMPLETE: printf("ADC_COMPLETE %u", ADC_COMPLETE); break;
-                case ADC_ERROR:    printf("ADC_ERROR %u", ADC_ERROR);    break;
-            }*/
-
-        }
-
-        if (stored_states[0] == false && samples[0] < thrs_trigger) {
-            stored_states[0] = true;
-            data = 1;
-            time_pressed = timer_read32();
-        }
-        else if (stored_states[0] == true && samples[0] > thrs_untrigger) {
-            stored_states[0] = false;
-            data = 0;
-            printf("time presses: %u ms", TIMER_DIFF_32(timer_read32(), time_pressed));
-        }
-        else {
-            if (stored_states[0])
-                data = 1;
-            else
-                data = 0;
-        }
-
-
-        //uint32_t c_port = palReadPort(GPIOC);
-        //data =   (palReadPort(GPIOB) & 0xFUL)         |          
-        //        ((palReadPort(GPIOD) & 0x7EUL) <<  3) |
-        //        ((c_port             & 0x1FUL) << 10) |
-        //        ((c_port             & 0xC0UL) <<  9);
-
-        if (matrix_debouncing[row] != data) {
-            matrix_debouncing[row] = data;
-            debouncing = true;
-            debouncing_time = timer_read();
-        }
     }
 
-    if (debouncing && timer_elapsed(debouncing_time) > DEBOUNCE) {
-        for (int row = 0; row < MATRIX_ROWS; row++) {
-            matrix[row] = matrix_debouncing[row];
+
+    if (matrix_scan_complete_flag){
+        adc_scan_count++;
+
+        adcsample_t test = samples[14*4];
+        if (test > max0)
+            max0 = test;
+        if (test < min0)
+            min0 = test;
+
+        test = samples[14*4 + 1];
+        if (test > max1)
+            max1 = test;
+        if (test < min1)
+            min1 = test;
+    
+        for (int x = 0; x < MATRIX_ROWS; x++) {
+            matrix_row_t data = 0;
+            matrix_row_t data_prev = matrix[x];
+            matrix_row_t data_uncertain = 0;
+    
+            for (int y = 0; y < MATRIX_COLS; y++) { 
+                adcsample_t sample = samples[y + x*MATRIX_COLS];
+                if (sample < thrs_trigger){
+                    data |= 1 << y;
+                } else if (sample < thrs_untrigger) {
+                    data_uncertain |= 1 << y;
+                }
+            }
+    
+            data |= data_prev & data_uncertain;
+            matrix[x] = data;
+    
+            if (data != data_prev)
+                changed = 1;
         }
-        debouncing = false;
+        matrix_scan_complete_flag = 0;
     }
 
     matrix_scan_quantum();
-    return 1;
+    return changed;
 }
 
 bool matrix_is_on(uint8_t row, uint8_t col)
@@ -375,10 +399,9 @@ matrix_row_t matrix_get_row(uint8_t row)
     return matrix[row];
 }
 
-
 void matrix_print(void)
 {
-    xprintf("\nr/c 0123456789ABCDEFG\n");
+    xprintf("\nr/c 0123456789ABCDEF\n");
     for (uint8_t row = 0; row < MATRIX_ROWS; row++) {
         xprintf("%02X: ", row);
         matrix_row_t data = matrix_get_row(row);
@@ -390,6 +413,4 @@ void matrix_print(void)
         }
         xprintf("\n");
     }
-
-    //wait_ms(50); 
 }
